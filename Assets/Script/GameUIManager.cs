@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 
 public class GameUIManager : MonoBehaviour
@@ -23,6 +24,7 @@ public class GameUIManager : MonoBehaviour
     }
 
     [SerializeField] GameObject settingsPanel;
+    [SerializeField] TextMeshProUGUI errorMessageText;
 
     void Start()
     {
@@ -31,5 +33,10 @@ public class GameUIManager : MonoBehaviour
     public void ToggleSettingsPanel()
     {
         settingsPanel.SetActive(!settingsPanel.activeSelf);
+    }
+
+    public void DisplayErrorMessage(string errorText)
+    {
+        errorMessageText.text = errorText;
     }
 }

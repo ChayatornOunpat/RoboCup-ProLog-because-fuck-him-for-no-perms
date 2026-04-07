@@ -27,12 +27,15 @@ public class PrologClient : MonoBehaviour
     public GameObject ballObject;
     public GameObject playerPrefab;
     private Dictionary<string, GameObject> playerObjects = new Dictionary<string, GameObject>();
+
+    [SerializeField] float secondsToWaitBeforeNextFrame = 0.6f;
     string url = "http://localhost:5000/action";
 
 
 
     void Start()
     {
+        ResetGame();
         StartCoroutine(GameLoop());
     }
 
@@ -41,7 +44,7 @@ public class PrologClient : MonoBehaviour
         while(true)
         {
             yield return SendStep();
-            yield return new WaitForSeconds(1f);
+            yield return new WaitForSeconds(secondsToWaitBeforeNextFrame);
         }
     }
 
@@ -60,6 +63,12 @@ public class PrologClient : MonoBehaviour
         yield return request.SendWebRequest();
 
         GameState state = JsonUtility.FromJson<GameState>(request.downloadHandler.text);
+
+        if (state == null)
+        {
+            GameUIManager.Instance.DisplayErrorMessage("Error: Prolog Server Not Initiailized!");
+        }
+
         Debug.Log("Ball X: " + state.ball[0]);
 
         foreach (var p in state.players)
