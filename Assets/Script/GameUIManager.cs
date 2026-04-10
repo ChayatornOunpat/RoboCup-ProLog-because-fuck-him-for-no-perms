@@ -24,6 +24,7 @@ public class GameUIManager : MonoBehaviour
     }
 
     [SerializeField] GameObject settingsPanel;
+    [SerializeField] GameObject scorePanel;
     [SerializeField] TextMeshProUGUI errorMessageText;
 
     void Start()
@@ -33,6 +34,11 @@ public class GameUIManager : MonoBehaviour
     public void ToggleSettingsPanel()
     {
         settingsPanel.SetActive(!settingsPanel.activeSelf);
+    }
+
+    public void ToggleScorePanel()
+    {
+        scorePanel.SetActive(!scorePanel.activeSelf);
     }
 
     public void DisplayErrorMessage(string errorText)

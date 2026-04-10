@@ -1,5 +1,7 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.Networking;
 using UnityEngine.UI;
@@ -16,10 +18,35 @@ public class PlayerData
 }
 
 [System.Serializable]
+public class BallData
+{
+    public float x;
+    public float y;
+    public float vx;
+    public float vy;
+}
+
+[System.Serializable]
+public class ScoreData
+{
+    public int teamA;
+    public int teamB;
+}
+
+[System.Serializable]
+public class EventData
+{
+    public string type;
+    public string team;
+}
+
+[System.Serializable]
 public class GameState
 {
-    public float[] ball;
+    public BallData ball;
     public PlayerData[] players;
+    public EventData[] events;
+    public ScoreData score;
 }
 
 public class PrologClient : MonoBehaviour
@@ -33,9 +60,11 @@ public class PrologClient : MonoBehaviour
     Vector3 ballTarget; // for smooth unity rendering
     [SerializeField] float secondsToWaitBeforeNextFrame = 0.5f;
     [SerializeField] Toggle interpolationToggle; // frames/positions of players/ball from prolog will be used to render WITHOUT unity smoothing movement rendering
-    
+
     [SerializeField] Sprite teamACharacter;
     [SerializeField] Sprite teamBCharacter;
+    [SerializeField] TextMeshProUGUI scoreText;
+    [SerializeField] TextMeshProUGUI LogText;
     string url = "http://localhost:5000/action";
 
 
@@ -70,14 +99,33 @@ public class PrologClient : MonoBehaviour
 
         yield return request.SendWebRequest();
 
-        GameState state = JsonUtility.FromJson<GameState>(request.downloadHandler.text);
+        string responseText = request.downloadHandler.text;
+
+        Debug.Log(responseText);
+
+        GameState state = JsonUtility.FromJson<GameState>(responseText);
+
+        if (state.events != null)
+        {
+            foreach (var ev in state.events)
+            {
+                if (ev.type == "goal")
+                {
+                    Debug.Log("GOAL by Team " + ev.team);
+                    ShowLogText("GOAL! Team " + ev.team);
+                    scoreText.text = state.score.teamA + " - " + state.score.teamB;
+                }
+            }
+        }
+
 
         if (state == null)
         {
+            Debug.LogError("Error: Prolog Server Not Initiailized!");
             GameUIManager.Instance.DisplayErrorMessage("Error: Prolog Server Not Initiailized!");
         }
 
-        Debug.Log("Ball X: " + state.ball[0]);
+        //Debug.Log("Ball X: " + state.ball[0]);
 
         foreach (var p in state.players)
         {
@@ -115,17 +163,28 @@ public class PrologClient : MonoBehaviour
         }
 
 
-        Debug.Log("Ball: " + state.ball[0] + ", " + state.ball[1]);
+        //Debug.Log("Ball: " + state.ball[0] + ", " + state.ball[1]);
+        Debug.Log("Ball: " + state.ball.x + ", " + state.ball.y);
 
         if (!interpolationToggle.isOn)
         {
-            ballObject.transform.position = new Vector3(state.ball[0] / 20f, state.ball[1] / 20f, 0);
+            ballObject.transform.position = new Vector3(state.ball.x / 20f, state.ball.y / 20f, 0);
         } else
         {
-            ballTarget = new Vector3(state.ball[0] / 20f, state.ball[1] / 20f, 0);
+            ballTarget = new Vector3(state.ball.x / 20f, state.ball.y / 20f, 0);
         }
         
     }
+
+    private void ShowLogText(string v)
+    {
+        
+    }
+
+    // private void ShowGoalUI(string team)
+    // {
+    //     score
+    // }
 
     // nEw
     public float moveSpeed = 5f;

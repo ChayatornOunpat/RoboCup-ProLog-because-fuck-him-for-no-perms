@@ -2,6 +2,16 @@ field_size(200, 120).
 goal_width(14).
 game_duration(200). % Total game time in ticks 
 
+% Logs: For game events logging in unity
+:- dynamic game_event/1.
+
+log_event(Event) :-
+    assertz(game_event(Event)).
+
+collect_events(Events) :-
+    findall(E, game_event(E), Events),
+    retractall(game_event(_)).
+
 % Ball state: ball(X, Y, VX, VY, Possession).
 :- dynamic ball/5.
 
@@ -148,7 +158,9 @@ check_goal :-
             attempt_save(Goalkeeper), 
             write('Save attempt by Team B goalkeeper! No goal.~n')
         ; 
-           reset_players_ball, write('Goal scored by Team A!'), nl, update_score(teamA) 
+           reset_players_ball, write('Goal scored by Team A!'), nl, update_score(teamA),
+           log_event(event{type:"goal", team:"A"})
+
         )
     ; 
       % Check if the ball is in the scoring range for Team B (left side of the field)
@@ -160,8 +172,10 @@ check_goal :-
         (Dist =< Radius -> 
             attempt_save(Goalkeeper), 
             write('Save attempt by Team A goalkeeper! No goal.~n')
+
         ; 
-           reset_players_ball, write('Goal scored by Team B!'), nl, update_score(teamB)
+           reset_players_ball, write('Goal scored by Team B!'), nl, update_score(teamB),
+            log_event(event{type:"goal", team:"B"})
         );
       true
     ).
@@ -226,7 +240,7 @@ reset_players_ball :-
          assertz(player(Team, Player, Pos, 80, InitX, InitY)))).
 
 % Goalkeeper save
-save_radius(10).  % Goalkeeper can save the ball if it's within 8 units
+save_radius(5).  % Goalkeeper can save the ball if it's within 8 units
 
 attempt_save(Goalkeeper) :-
     player(Team, Goalkeeper, goalkeeper, Stam, PX, PY),

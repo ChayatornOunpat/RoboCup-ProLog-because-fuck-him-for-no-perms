@@ -25,17 +25,24 @@ process_action("step", Response) :-
     with_output_to(string(_), simulate_half(1,1)),  % run one tick
 
     % get ball
-    ball(X, Y, _, _, Possession),
+    ball(X, Y, VX, VY, Possession),
 
     % get players
     findall(_{name: Name, team: Team, x: PX, y: PY},
         player(Team, Name, _, _, PX, PY),
         Players),
+    
+    collect_events(Events),
+
+    score(teamA, ScoreA),
+    score(teamB, ScoreB),
 
     Response = _{
-        ball: [X, Y],
+        ball: _{x:X, y:Y, vx:VX, vy:VY},
         possession: Possession,
-        players: Players
+        players: Players,
+        events: Events,
+        score: _{teamA: ScoreA, teamB: ScoreB}
     }.
 
 process_action("reset", Response) :-
