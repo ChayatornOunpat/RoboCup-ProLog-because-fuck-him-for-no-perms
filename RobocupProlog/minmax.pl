@@ -26,24 +26,24 @@
 %  INITIAL STATE
 % ------------------------------------------------------------
 
-%  First half: ball with player_2A (Team A forward) at (4,3)
+%  First half: ball with player_2A (Team A forward) at (5,3)
 initial_state_first_half(State) :-
     State = state(
         1,
         0-0,
-        [p(defender, 2, 3, 100), p(forward, 4, 3, 100)],
-        [p(defender, 7, 3, 100), p(forward, 5, 3, 100)],
-        ball(4, 3, player_2A)
+        [p(defender, 3, 2, 100), p(forward, 5, 3, 100)],
+        [p(defender, 8, 3, 100), p(forward, 6, 2, 100)],
+        ball(5, 3, player_2A)
     ).
 
-%  Second half: ball with player_2B (Team B forward) at (5,3)
+%  Second half: ball with player_2B (Team B forward) at (6,3)
 initial_state_second_half(ScoreA-ScoreB, State) :-
     State = state(
         16,
         ScoreA-ScoreB,
-        [p(defender, 2, 3, 100), p(forward, 4, 3, 100)],
-        [p(defender, 7, 3, 100), p(forward, 5, 3, 100)],
-        ball(5, 3, player_2B)
+        [p(defender, 3, 3, 100), p(forward, 5, 2, 100)],
+        [p(defender, 8, 2, 100), p(forward, 6, 3, 100)],
+        ball(6, 3, player_2B)
     ).
 
 % ------------------------------------------------------------
@@ -585,13 +585,13 @@ scored_on_team(b, a).
 losing_forward_atom(a, player_2A).
 losing_forward_atom(b, player_2B).
 
-losing_kickoff_pos(a, 4, 3).   % Team A forward restart pos
-losing_kickoff_pos(b, 5, 3).   % Team B forward restart pos
+losing_kickoff_pos(a, 5, 3).   % Team A forward restart pos
+losing_kickoff_pos(b, 6, 2).   % Team B forward restart pos
 
 reset_players(_, _, _,
               StamD_A, StamF_A, StamD_B, StamF_B,
-              [p(defender,2,3,StamD_A), p(forward,4,3,StamF_A)],
-              [p(defender,7,3,StamD_B), p(forward,5,3,StamF_B)]).
+              [p(defender,3,3,StamD_A), p(forward,5,3,StamF_A)],
+              [p(defender,8,2,StamD_B), p(forward,6,2,StamF_B)]).
 
 opponent_team(a, b).
 opponent_team(b, a).
@@ -1257,3 +1257,205 @@ alpha_beta_min_root([ActB|Rest], State, Depth, Alpha, Beta,
 %  ?- set_play_mode(minimax_vs_minimax), set_search_depth(2),
 %     run_minimax_game.
 % ------------------------------------------------------------
+
+
+% ============================================================
+%  BRIDGE LAYER FOR server.pl
+%
+%  server.pl consults this file (via game.pl stub) and calls a
+%  small fixed protocol of predicates each HTTP /action request.
+%  This block implements that protocol on top of the engine
+%  defined above.
+%
+%  Turn model adaptation:
+%    The engine processes both teams per turn (a then b, then T++).
+%    The server's flow is one-action-per-step. We collapse both
+%    teams' actions into a single combined(ActA, ActB) action so
+%    one Unity step == one full engine turn.
+%
+%  Mode mapping (set via set_mode from server.pl):
+%    "ai_vs_ai"     -> minimax_vs_minimax (both teams branch)
+%    "slider_vs_ai" -> minimax_vs_priority (A=minimax, B=priority)
+%
+%  Strategy mapping (set via set_strategy):
+%    aggression in [0..100] for the priority-driven team.
+%      >= 67  : attacking + aggressive
+%      34..66 : attacking + conservative (balanced)
+%      <= 33  : supportive + conservative
+% ============================================================
+
+:- dynamic live_state/1.
+:- dynamic game_event/1.
+:- dynamic game_mode/1.
+:- dynamic strategy_aggression/2.
+
+% ---- INIT / STATE I/O ----
+
+init_live_state :-
+    retractall(live_state(_)),
+    retractall(game_event(_)),
+    retractall(game_mode(_)),
+    retractall(strategy_aggression(_, _)),
+    assertz(game_mode(ai_vs_ai)),
+    assertz(strategy_aggression(teamA, 50)),
+    assertz(strategy_aggression(teamB, 50)),
+    set_search_depth(2),
+    retractall(play_mode(_)),
+    assertz(play_mode(minimax_vs_minimax)),
+    initial_state_first_half(S0),
+    assertz(live_state(S0)).
+
+current_state(S) :- live_state(S).
+
+store_state(S) :-
+    retractall(live_state(_)),
+    assertz(live_state(S)).
+
+clear_events :- retractall(game_event(_)).
+
+log_event(E) :- assertz(game_event(E)).
+
+% ---- TERMINAL / TURN ORDER ----
+
+terminal(state(T, _, _, _, _)) :- T > 30.
+
+%  The team token is opaque to server.pl; we use `round` because
+%  one step covers a whole round (both teams).
+current_team(_, round).
+
+% ---- CHOOSE ACTION ----
+
+choose_action(State, _Team, combined(ActA, ActB)) :-
+    ( game_mode(Mode) -> true ; Mode = ai_vs_ai ),
+    sync_play_mode(Mode),
+    pick_team_actions(Mode, State, ActA, ActB),
+    log_agent_choice(Mode, State, ActA, ActB).
+
+%  Pretty-print each team's action to the server console so the
+%  user can follow what the agents decided on every Unity step.
+log_agent_choice(Mode, state(T, SA-SB, _, _, ball(_, _, Poss)), ActA, ActB) :-
+    agent_label(a, Mode, LabelA),
+    agent_label(b, Mode, LabelB),
+    format(user_output,
+        "~n-- Turn ~w | Score A:~w B:~w | Ball:~w | Mode:~w --~n",
+        [T, SA, SB, Poss, Mode]),
+    format(user_output, "   Team A [~w]: ~w~n", [LabelA, ActA]),
+    format(user_output, "   Team B [~w]: ~w~n", [LabelB, ActB]),
+    flush_output(user_output).
+
+agent_label(b, slider_vs_ai, priority) :- !.
+agent_label(_, _,            minimax).
+
+%  Depth is mode-dependent. In minimax_vs_minimax one round expands
+%  both teams (~|A|*|B| combinations), so depth 2 blows up quickly
+%  and the whole game appears frozen. Depth 1 here still gives one
+%  full round of lookahead and keeps each step responsive.
+sync_play_mode(slider_vs_ai) :- !,
+    retractall(play_mode(_)),
+    assertz(play_mode(minimax_vs_priority)),
+    set_search_depth(2).
+sync_play_mode(_) :-
+    retractall(play_mode(_)),
+    assertz(play_mode(minimax_vs_minimax)),
+    set_search_depth(2).
+
+%  ai_vs_ai : both minimax
+pick_team_actions(ai_vs_ai, State, ActA, ActB) :- !,
+    pick_minimax_a(State, ActA),
+    once(apply_team_actions(a, ActA, State, S1)),
+    pick_minimax_b(S1, ActB).
+
+%  slider_vs_ai : A = minimax, B = priority list (aggression-driven)
+pick_team_actions(slider_vs_ai, State, ActA, ActB) :- !,
+    pick_minimax_a(State, ActA),
+    once(apply_team_actions(a, ActA, State, S1)),
+    sync_team_presets(b),
+    once(priority_team_action_default(b, S1, ActB)).
+
+%  Unknown mode: full minimax fallback.
+pick_team_actions(_, State, ActA, ActB) :-
+    pick_minimax_a(State, ActA),
+    once(apply_team_actions(a, ActA, State, S1)),
+    pick_minimax_b(S1, ActB).
+
+pick_minimax_a(State, Act) :-
+    ( catch(best_move_a(State, A, _), _, fail) -> Act = A
+    ; Act = act(hold, hold)
+    ).
+
+pick_minimax_b(State, Act) :-
+    ( catch(best_move_b(State, A, _), _, fail) -> Act = A
+    ; Act = act(hold, hold)
+    ).
+
+% ---- APPLY ACTION ----
+
+apply_action(State, _Team, combined(ActA, ActB), NewState) :-
+    once(apply_team_actions(a, ActA, State, S1)),
+    once(apply_team_actions(b, ActB, S1, S2)),
+    advance_turn(S2, S3),
+    maybe_halftime(S3, NewState).
+
+%  When the turn rolls over to 16, reset positions but keep score.
+maybe_halftime(state(16, Score, _, _, _), S16) :- !,
+    initial_state_second_half(Score, S16).
+maybe_halftime(S, S).
+
+% ---- STRATEGY -> PRIORITY PRESET ----
+
+aggression_presets(Agg, attacking,  aggressive)  :- Agg >= 67, !.
+aggression_presets(Agg, attacking,  conservative) :- Agg >= 34, !.
+aggression_presets(_,   supportive, conservative).
+
+team_atom_to_key(a, teamA).
+team_atom_to_key(b, teamB).
+
+sync_team_presets(Team) :-
+    team_atom_to_key(Team, Key),
+    ( strategy_aggression(Key, Agg) -> true ; Agg = 50 ),
+    aggression_presets(Agg, FwdP, DefP),
+    retractall(active_preset(Team, forward,  _)),
+    retractall(active_preset(Team, defender, _)),
+    assertz(active_preset(Team, forward,  FwdP)),
+    assertz(active_preset(Team, defender, DefP)).
+
+% ---- EVENTS ----
+
+emit_events(state(_, OldSA-OldSB, _, _, _),
+            state(NewT, NewSA-NewSB, _, _, _)) :-
+    ( NewSA > OldSA -> log_event(event{type:"goal", team:"A"}) ; true ),
+    ( NewSB > OldSB -> log_event(event{type:"goal", team:"B"}) ; true ),
+    ( NewT =:= 16   -> log_event(event{type:"half_time"})      ; true ),
+    ( NewT  >  30   -> log_event(event{type:"full_time"})      ; true ).
+
+% ---- JSON RESPONSE ----
+
+%  Player atoms Unity keys on:
+%    player_1A = Team A defender    player_2A = Team A forward
+%    player_1B = Team B defender    player_2B = Team B forward
+%
+%  Grid is 10x6; PrologClient.cs divides by 20, so emit Col*20, Row*20.
+
+build_game_state(Response) :-
+    current_state(state(_, SA-SB, PA, PB, ball(BC, BR, Poss))),
+    PA = [p(_, DAC, DAR, _), p(_, FAC, FAR, _)],
+    PB = [p(_, DBC, DBR, _), p(_, FBC, FBR, _)],
+    BX  is BC  * 20, BY  is BR  * 20,
+    DAX is DAC * 20, DAY is DAR * 20,
+    FAX is FAC * 20, FAY is FAR * 20,
+    DBX is DBC * 20, DBY is DBR * 20,
+    FBX is FBC * 20, FBY is FBR * 20,
+    Players = [
+        _{name: player_1A, team: teamA, x: DAX, y: DAY},
+        _{name: player_2A, team: teamA, x: FAX, y: FAY},
+        _{name: player_1B, team: teamB, x: DBX, y: DBY},
+        _{name: player_2B, team: teamB, x: FBX, y: FBY}
+    ],
+    findall(E, game_event(E), Events),
+    Response = _{
+        ball:       _{x: BX, y: BY, vx: 0, vy: 0},
+        possession: Poss,
+        players:    Players,
+        events:     Events,
+        score:      _{teamA: SA, teamB: SB}
+    }.
