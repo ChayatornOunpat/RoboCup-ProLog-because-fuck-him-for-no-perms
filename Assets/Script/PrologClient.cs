@@ -59,6 +59,8 @@ public class PrologClient : MonoBehaviour
     Dictionary<string, Vector3> targetPositions = new Dictionary<string, Vector3>();
     Vector3 ballTarget; // for smooth unity rendering
     [SerializeField] float secondsToWaitBeforeNextFrame = 0.4f;
+    [SerializeField] float kickoffHoldSeconds = 1.5f; // extra pause so turn 1 / turn 16 layouts are visible
+    bool holdNextFrame = false; // set when the current step is kickoff (game start or half-time)
     [SerializeField] Toggle interpolationToggle; // frames/positions of players/ball from prolog will be used to render WITHOUT unity smoothing movement rendering
 
     [SerializeField] Sprite teamACharacter;
@@ -66,25 +68,103 @@ public class PrologClient : MonoBehaviour
     [SerializeField] TextMeshProUGUI scoreText;
     [SerializeField] GameObject LogText;
     [SerializeField] GameObject gameOverPanel;
+
+    [Header("Settings UI")]
+    [SerializeField] Button modeToggleButton;
+    [SerializeField] TextMeshProUGUI modeLabelText;
+    [SerializeField] TMP_Dropdown strategyDropdown;
+
     string url = "http://localhost:5000/action";
     bool gameOver = false;
+
+    // Applied on next reset; see ApplyPendingModeAndReset.
+    string pendingMode = "ai_vs_ai";
+
+    // Dropdown labels and aggression values sent to Prolog.
+    static readonly string[] StrategyLabels = { "Defensive", "Balanced", "Attacking" };
+    static readonly int[] StrategyAggressions = { 15, 50, 85 };
 
 
 
     void Start()
     {
+        SetupSettingsUI();
         ResetGame();
         ShowLogText("Game has started!");
         interpolationToggle.isOn = true;
         // StartCoroutine(GameLoop());
     }
 
+    void SetupSettingsUI()
+    {
+        if (modeToggleButton != null)
+        {
+            modeToggleButton.onClick.RemoveAllListeners();
+            modeToggleButton.onClick.AddListener(OnToggleMode);
+        }
+        UpdateModeLabel();
+
+        if (strategyDropdown != null)
+        {
+            strategyDropdown.ClearOptions();
+            strategyDropdown.AddOptions(new List<string>(StrategyLabels));
+            strategyDropdown.value = 1; // Balanced
+            strategyDropdown.RefreshShownValue();
+            strategyDropdown.onValueChanged.RemoveAllListeners();
+            strategyDropdown.onValueChanged.AddListener(OnStrategyChanged);
+        }
+    }
+
+    public void OnToggleMode()
+    {
+        pendingMode = pendingMode == "ai_vs_ai" ? "slider_vs_ai" : "ai_vs_ai";
+        UpdateModeLabel();
+        ShowLogText("Mode: " + ModeDisplayName(pendingMode) + " (applies on restart)");
+    }
+
+    void UpdateModeLabel()
+    {
+        if (modeLabelText != null) modeLabelText.text = ModeDisplayName(pendingMode);
+    }
+
+    string ModeDisplayName(string mode)
+    {
+        return mode == "ai_vs_ai" ? "AI vs AI" : "AI vs Priority";
+    }
+
+    public void OnStrategyChanged(int index)
+    {
+        int i = Mathf.Clamp(index, 0, StrategyAggressions.Length - 1);
+        int agg = StrategyAggressions[i];
+        // Strategy drives Team B's priority agent in slider_vs_ai mode.
+        StartCoroutine(SendSimplePost(
+            "{\"action\":\"set_strategy\",\"team\":\"teamB\",\"aggression\":" + agg + "}"));
+        ShowLogText("Strategy: " + StrategyLabels[i]);
+    }
+
+    IEnumerator SendSimplePost(string json)
+    {
+        UnityWebRequest request = new UnityWebRequest(url, "POST");
+        byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
+        request.uploadHandler = new UploadHandlerRaw(bodyRaw);
+        request.downloadHandler = new DownloadHandlerBuffer();
+        request.SetRequestHeader("Content-Type", "application/json");
+        yield return request.SendWebRequest();
+    }
+
     IEnumerator GameLoop()
     {
+        holdNextFrame = true; // first frame after reset shows the kickoff layout
         while(!gameOver)
         {
             yield return SendStep();
-            yield return new WaitForSeconds(secondsToWaitBeforeNextFrame);
+            float wait = secondsToWaitBeforeNextFrame;
+            if (holdNextFrame)
+            {
+                wait += kickoffHoldSeconds;
+                holdNextFrame = false;
+            }
+            yield return new WaitForSeconds(wait);
         }
     }
 
@@ -125,8 +205,15 @@ public class PrologClient : MonoBehaviour
                         ShowLogText("Team " + ev.team +  " scored!");
                         scoreText.text = state.score.teamA + " - " + state.score.teamB;
                         break;
+                    case "kickoff":
+                        // Prolog emits this on the initial layout, after a goal,
+                        // and on the half-time swap. Linger so the player can see
+                        // the reset positions before action resumes.
+                        holdNextFrame = true;
+                        break;
                     case "half_time":
                         ShowLogText("Half-time!");
+                        holdNextFrame = true; // linger on the turn-16 kickoff layout
                         break;
                     case "full_time":
                         ShowLogText("Full-time! Game Over!");
@@ -155,9 +242,11 @@ public class PrologClient : MonoBehaviour
 
         foreach (var p in state.players)
         {
+            Vector3 gridPos = new Vector3(p.x / 20f, p.y / 20f, 0);
+
             if (!playerObjects.ContainsKey(p.name))
             {
-                GameObject obj = Instantiate(playerPrefab);
+                GameObject obj = Instantiate(playerPrefab, gridPos, Quaternion.identity);
 
                 SpriteRenderer sr = obj.GetComponent<SpriteRenderer>();
 
@@ -167,23 +256,25 @@ public class PrologClient : MonoBehaviour
                     sr.sprite = teamBCharacter;
 
                 playerObjects[p.name] = obj;
+                targetPositions[p.name] = gridPos;
             }
 
             if (!interpolationToggle.isOn) // frames/positions of players/ball from prolog will be used to render WITHOUT unity smoothing rendering
             {
-                playerObjects[p.name].transform.position =
-                new Vector3(p.x / 20f, p.y / 20f, 0);
+                playerObjects[p.name].transform.position = gridPos;
             } else  // frames/positions of players/ball from prolog will be used to render WITH unity smoothing rendering
             {
-                Vector3 target = new Vector3(p.x / 20f, p.y / 20f, 0);
-                targetPositions[p.name] = target;
+                targetPositions[p.name] = gridPos;
             }
-        
+
         }
+
+        Vector3 ballPos = new Vector3(state.ball.x / 20f, state.ball.y / 20f, 0);
 
         if (ballObject == null)
         {
-            ballObject = Instantiate(ballPrefab);
+            ballObject = Instantiate(ballPrefab, ballPos, Quaternion.identity);
+            ballTarget = ballPos;
         }
 
 
@@ -191,10 +282,10 @@ public class PrologClient : MonoBehaviour
 
         if (!interpolationToggle.isOn)
         {
-            ballObject.transform.position = new Vector3(state.ball.x / 20f, state.ball.y / 20f, 0);
+            ballObject.transform.position = ballPos;
         } else
         {
-            ballTarget = new Vector3(state.ball.x / 20f, state.ball.y / 20f, 0);
+            ballTarget = ballPos;
         }
         
     }
@@ -294,6 +385,19 @@ public class PrologClient : MonoBehaviour
         request.SetRequestHeader("Content-Type", "application/json");
 
         yield return request.SendWebRequest();
+
+        // reset re-initializes game_mode/strategy on the server, so push the
+        // UI selections AFTER reset but BEFORE the first step.
+        yield return SendSimplePost(
+            "{\"action\":\"set_mode\",\"mode\":\"" + pendingMode + "\"}");
+
+        if (strategyDropdown != null)
+        {
+            int i = Mathf.Clamp(strategyDropdown.value, 0, StrategyAggressions.Length - 1);
+            yield return SendSimplePost(
+                "{\"action\":\"set_strategy\",\"team\":\"teamB\",\"aggression\":"
+                + StrategyAggressions[i] + "}");
+        }
 
         gameLoopCoroutine = StartCoroutine(GameLoop());
     }
