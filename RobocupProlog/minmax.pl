@@ -567,8 +567,9 @@ check_goal(State, NewState) :-
     % reset positions, ball to scored-on team's forward
     scored_on_team(ScoringTeam, LosingTeam),
     losing_forward_atom(LosingTeam, FwdAtom),
-    losing_kickoff_pos(LosingTeam, FwdCol, FwdRow),
-    reset_players(LosingTeam, FwdCol, FwdRow,
+    half_of_turn(T, Half),
+    kickoff_forward_pos(Half, LosingTeam, FwdCol, FwdRow),
+    reset_players(Half,
                   StamD_A, StamF_A, StamD_B, StamF_B,
                   PA_new, PB_new),
     NewState = state(T, NewSA-NewSB, PA_new, PB_new,
@@ -585,13 +586,22 @@ scored_on_team(b, a).
 losing_forward_atom(a, player_2A).
 losing_forward_atom(b, player_2B).
 
-losing_kickoff_pos(a, 5, 3).   % Team A forward restart pos
-losing_kickoff_pos(b, 6, 2).   % Team B forward restart pos
+half_of_turn(T, first_half)  :- T =< 15, !.
+half_of_turn(_, second_half).
 
-reset_players(_, _, _,
+kickoff_forward_pos(first_half,  a, 5, 3).
+kickoff_forward_pos(first_half,  b, 6, 2).
+kickoff_forward_pos(second_half, a, 5, 2).
+kickoff_forward_pos(second_half, b, 6, 3).
+
+reset_players(first_half,
               StamD_A, StamF_A, StamD_B, StamF_B,
-              [p(defender,3,3,StamD_A), p(forward,5,3,StamF_A)],
-              [p(defender,8,2,StamD_B), p(forward,6,2,StamF_B)]).
+              [p(defender,3,2,StamD_A), p(forward,5,3,StamF_A)],
+              [p(defender,8,3,StamD_B), p(forward,6,2,StamF_B)]).
+reset_players(second_half,
+              StamD_A, StamF_A, StamD_B, StamF_B,
+              [p(defender,3,3,StamD_A), p(forward,5,2,StamF_A)],
+              [p(defender,8,2,StamD_B), p(forward,6,3,StamF_B)]).
 
 opponent_team(a, b).
 opponent_team(b, a).
@@ -1288,6 +1298,7 @@ alpha_beta_min_root([ActB|Rest], State, Depth, Alpha, Beta,
 :- dynamic game_event/1.
 :- dynamic game_mode/1.
 :- dynamic strategy_aggression/2.
+:- dynamic kickoff_pending/0.
 
 % ---- INIT / STATE I/O ----
 
@@ -1296,6 +1307,7 @@ init_live_state :-
     retractall(game_event(_)),
     retractall(game_mode(_)),
     retractall(strategy_aggression(_, _)),
+    retractall(kickoff_pending),
     assertz(game_mode(ai_vs_ai)),
     assertz(strategy_aggression(teamA, 50)),
     assertz(strategy_aggression(teamB, 50)),
@@ -1303,7 +1315,9 @@ init_live_state :-
     retractall(play_mode(_)),
     assertz(play_mode(minimax_vs_minimax)),
     initial_state_first_half(S0),
-    assertz(live_state(S0)).
+    assertz(live_state(S0)),
+    %  First step after reset should render the kickoff layout unchanged.
+    assertz(kickoff_pending).
 
 current_state(S) :- live_state(S).
 
@@ -1325,11 +1339,25 @@ current_team(_, round).
 
 % ---- CHOOSE ACTION ----
 
+%  Kickoff frame: no actions are taken, we just show the reset layout.
+%  This happens on the very first step after init_live_state.
+choose_action(State, _Team, combined(skipped, skipped)) :-
+    kickoff_pending, !,
+    State = state(T, SA-SB, _, _, ball(_, _, Poss)),
+    format(user_output,
+        "~n-- Turn ~w | Score A:~w B:~w | Ball:~w | (kickoff frame) --~n",
+        [T, SA, SB, Poss]),
+    flush_output(user_output).
+
 choose_action(State, _Team, combined(ActA, ActB)) :-
     ( game_mode(Mode) -> true ; Mode = ai_vs_ai ),
     sync_play_mode(Mode),
     pick_team_actions(Mode, State, ActA, ActB),
     log_agent_choice(Mode, State, ActA, ActB).
+
+%  A goal just happened: score went up for either team.
+goal_occurred(state(_, SA0-SB0, _, _, _), state(_, SA1-SB1, _, _, _)) :-
+    (SA1 > SA0 ; SB1 > SB0).
 
 %  Pretty-print each team's action to the server console so the
 %  user can follow what the agents decided on every Unity step.
@@ -1340,7 +1368,11 @@ log_agent_choice(Mode, state(T, SA-SB, _, _, ball(_, _, Poss)), ActA, ActB) :-
         "~n-- Turn ~w | Score A:~w B:~w | Ball:~w | Mode:~w --~n",
         [T, SA, SB, Poss, Mode]),
     format(user_output, "   Team A [~w]: ~w~n", [LabelA, ActA]),
-    format(user_output, "   Team B [~w]: ~w~n", [LabelB, ActB]),
+    ( ActB == skipped
+    ->  format(user_output,
+            "   Team B [~w]: (skipped, kickoff after A scored)~n", [LabelB])
+    ;   format(user_output, "   Team B [~w]: ~w~n", [LabelB, ActB])
+    ),
     flush_output(user_output).
 
 agent_label(b, slider_vs_ai, priority) :- !.
@@ -1363,20 +1395,29 @@ sync_play_mode(_) :-
 pick_team_actions(ai_vs_ai, State, ActA, ActB) :- !,
     pick_minimax_a(State, ActA),
     once(apply_team_actions(a, ActA, State, S1)),
-    pick_minimax_b(S1, ActB).
+    ( goal_occurred(State, S1)
+    ->  ActB = skipped
+    ;   pick_minimax_b(S1, ActB)
+    ).
 
 %  slider_vs_ai : A = minimax, B = priority list (aggression-driven)
 pick_team_actions(slider_vs_ai, State, ActA, ActB) :- !,
     pick_minimax_a(State, ActA),
     once(apply_team_actions(a, ActA, State, S1)),
-    sync_team_presets(b),
-    once(priority_team_action_default(b, S1, ActB)).
+    ( goal_occurred(State, S1)
+    ->  ActB = skipped
+    ;   sync_team_presets(b),
+        once(priority_team_action_default(b, S1, ActB))
+    ).
 
 %  Unknown mode: full minimax fallback.
 pick_team_actions(_, State, ActA, ActB) :-
     pick_minimax_a(State, ActA),
     once(apply_team_actions(a, ActA, State, S1)),
-    pick_minimax_b(S1, ActB).
+    ( goal_occurred(State, S1)
+    ->  ActB = skipped
+    ;   pick_minimax_b(S1, ActB)
+    ).
 
 pick_minimax_a(State, Act) :-
     ( catch(best_move_a(State, A, _), _, fail) -> Act = A
@@ -1390,11 +1431,35 @@ pick_minimax_b(State, Act) :-
 
 % ---- APPLY ACTION ----
 
+%  Kickoff frame: retract the flag, return the state unchanged, emit
+%  a 'kickoff' event so Unity lingers on this layout.
+apply_action(State, _Team, _Action, NewState) :-
+    retract(kickoff_pending), !,
+    NewState = State,
+    log_event(event{type:"kickoff"}).
+
+%  A already scored during choose_action's look-ahead, so B was skipped.
+%  S1 (after A) is the post-goal reset layout; advance the turn and (if
+%  applicable) swap to the half-time layout, then emit 'kickoff'.
+apply_action(State, _Team, combined(ActA, skipped), NewState) :- !,
+    once(apply_team_actions(a, ActA, State, S1)),
+    advance_turn(S1, S2),
+    maybe_halftime(S2, NewState),
+    log_event(event{type:"kickoff"}).
+
+%  Normal round: both teams act, advance turn, maybe halftime-swap.
+%  A kickoff event fires when B scored or the half-time swap hit.
 apply_action(State, _Team, combined(ActA, ActB), NewState) :-
     once(apply_team_actions(a, ActA, State, S1)),
     once(apply_team_actions(b, ActB, S1, S2)),
     advance_turn(S2, S3),
-    maybe_halftime(S3, NewState).
+    maybe_halftime(S3, NewState),
+    (   goal_occurred(S1, S2)
+    ->  log_event(event{type:"kickoff"})
+    ;   NewState = state(16, _, _, _, _)
+    ->  log_event(event{type:"kickoff"})
+    ;   true
+    ).
 
 %  When the turn rolls over to 16, reset positions but keep score.
 maybe_halftime(state(16, Score, _, _, _), S16) :- !,

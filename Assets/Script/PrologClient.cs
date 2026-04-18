@@ -205,6 +205,12 @@ public class PrologClient : MonoBehaviour
                         ShowLogText("Team " + ev.team +  " scored!");
                         scoreText.text = state.score.teamA + " - " + state.score.teamB;
                         break;
+                    case "kickoff":
+                        // Prolog emits this on the initial layout, after a goal,
+                        // and on the half-time swap. Linger so the player can see
+                        // the reset positions before action resumes.
+                        holdNextFrame = true;
+                        break;
                     case "half_time":
                         ShowLogText("Half-time!");
                         holdNextFrame = true; // linger on the turn-16 kickoff layout
